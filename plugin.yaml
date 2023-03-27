@@ -3,7 +3,7 @@ repository: github.com/otms61/trivy-plugin-referrer
 version: "0.1.0"
 usage: upload artifact
 description: |-
-  A Trivy plugin that uploads artifacts to the oci registry
+  A Trivy plugin for oci referrers
   Usage: trivy image -q -f cyclonedx IMAGE_NAME | trivy referrer put
 platforms:
   - selector:

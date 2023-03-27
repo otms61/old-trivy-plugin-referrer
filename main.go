@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"os"
 
+	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/purl"
 	"github.com/aquasecurity/trivy/pkg/sbom"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -23,14 +23,52 @@ import (
 
 const (
 	// ref. https://github.com/opencontainers/image-spec/blob/dd7fd714f5406d39db5fd0602a0e6090929dc85e/annotations.md#pre-defined-annotation-keys
-	AnnotationDescription = "org.opencontainers.artifact.description"
+	annotationKeyDescription = "org.opencontainers.artifact.description"
+
+	// ref. https://www.iana.org/assignments/media-types/media-types.xhtml
+	// ref. https://www.iana.org/assignments/media-types/media-types.xhtml
+	mediaKeyCycloneDX = "application/vnd.cyclonedx+json"
+	mediaKeySPDX      = "application/spdx+json"
 )
 
 type referrer struct {
 	annotations map[string]string
-	mediaType   string
+	mediaType   ctypes.MediaType
 	bytes       []byte
 	targetRepo  name.Digest
+	targetDesc  v1.Descriptor
+}
+
+func (r *referrer) Image() (v1.Image, error) {
+	img, err := mutate.Append(empty.Image, mutate.Addendum{
+		Layer: static.NewLayer(r.bytes, ctypes.OCIUncompressedLayer),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// https://github.com/opencontainers/image-spec/blob/dd7fd714f5406d39db5fd0602a0e6090929dc85e/artifact.md#artifact-manifest-property-descriptions
+	img = mutate.MediaType(img, r.targetDesc.MediaType)
+	img = mutate.ConfigMediaType(img, r.mediaType)
+	img = mutate.Annotations(img, r.annotations).(v1.Image)
+	img = mutate.Subject(img, r.targetDesc).(v1.Image)
+
+	return img, nil
+}
+
+func (r *referrer) Tag(img v1.Image) (name.Digest, error) {
+	digest, err := img.Digest()
+	if err != nil {
+		return name.Digest{}, err
+	}
+
+	tag, err := name.NewDigest(
+		fmt.Sprintf("%s/%s@%s", r.targetRepo.RegistryStr(), r.targetRepo.RepositoryStr(), digest.String()),
+	)
+	if err != nil {
+		return name.Digest{}, err
+	}
+	return tag, nil
 }
 
 func repoFromPurl(purlStr string) (name.Digest, error) {
@@ -66,8 +104,8 @@ func repoFromSpdx(spdx spdx.Document2_2) (name.Digest, error) {
 	return name.Digest{}, fmt.Errorf("not found: repo uri")
 }
 
-func referrerFromReader(reader io.Reader) (referrer, error) {
-	b, err := io.ReadAll(reader)
+func referrerFromSBOM(r io.Reader) (referrer, error) {
+	b, err := io.ReadAll(r)
 	if err != nil {
 		return referrer{}, err
 	}
@@ -81,7 +119,7 @@ func referrerFromReader(reader io.Reader) (referrer, error) {
 		return referrer{}, err
 	}
 
-	var mediaType string
+	var mediaType ctypes.MediaType
 	var anns map[string]string
 	var repo name.Digest
 
@@ -92,9 +130,9 @@ func referrerFromReader(reader io.Reader) (referrer, error) {
 			return referrer{}, err
 		}
 		anns = map[string]string{
-			AnnotationDescription: "CycloneDX JSON SBOM",
+			annotationKeyDescription: "CycloneDX JSON SBOM",
 		}
-		mediaType = "application/vnd.cyclonedx+json"
+		mediaType = mediaKeyCycloneDX
 
 	case sbom.FormatSPDXJSON:
 		repo, err = repoFromSpdx(*decoded.SPDX)
@@ -102,12 +140,17 @@ func referrerFromReader(reader io.Reader) (referrer, error) {
 			return referrer{}, err
 		}
 		anns = map[string]string{
-			AnnotationDescription: "SPDX JSON SBOM",
+			annotationKeyDescription: "SPDX JSON SBOM",
 		}
-		mediaType = "application/spdx+json"
+		mediaType = mediaKeySPDX
 
 	default:
 		return referrer{}, fmt.Errorf("unsupported format: %s", format)
+	}
+
+	targetDesc, err := remote.Head(repo)
+	if err != nil {
+		return referrer{}, err
 	}
 
 	return referrer{
@@ -115,44 +158,27 @@ func referrerFromReader(reader io.Reader) (referrer, error) {
 		mediaType:   mediaType,
 		bytes:       b,
 		targetRepo:  repo,
+		targetDesc:  *targetDesc,
 	}, nil
 }
 
 func putReferrer(r io.Reader) error {
-
-	ref, err := referrerFromReader(r)
+	ref, err := referrerFromSBOM(r)
 	if err != nil {
 		return err
 	}
 
-	targetDesc, err := remote.Head(ref.targetRepo)
+	img, err := ref.Image()
 	if err != nil {
 		return err
 	}
 
-	img, err := mutate.Append(empty.Image, mutate.Addendum{
-		Layer: static.NewLayer(ref.bytes, ctypes.OCIUncompressedLayer),
-	})
+	tag, err := ref.Tag(img)
 	if err != nil {
 		return err
 	}
 
-	img = mutate.MediaType(img, targetDesc.MediaType)
-	img = mutate.ConfigMediaType(img, ctypes.MediaType(ref.mediaType))
-	img = mutate.Annotations(img, ref.annotations).(v1.Image)
-	img = mutate.Subject(img, *targetDesc).(v1.Image)
-
-	digest, err := img.Digest()
-	if err != nil {
-		return err
-	}
-
-	tag, err := name.NewDigest(
-		fmt.Sprintf("%s/%s@%s", ref.targetRepo.RegistryStr(), ref.targetRepo.RepositoryStr(), digest.String()),
-	)
-	if err != nil {
-		return err
-	}
+	log.Logger.Debugf("Pushing referrer to %s", tag.String())
 
 	err = remote.Write(tag, img, remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
@@ -164,7 +190,7 @@ func putReferrer(r io.Reader) error {
 
 func main() {
 	rootCmd := &cobra.Command{
-		Short: "A Trivy plugin that handle oci referrers",
+		Short: "A Trivy plugin for oci referrers",
 	}
 	putCmd := &cobra.Command{
 		Use:   "put",
@@ -204,6 +230,6 @@ func main() {
 	rootCmd.AddCommand(putCmd)
 
 	if err := putCmd.Execute(); err != nil {
-		log.Fatal(err)
+		log.Logger.Fatal(err)
 	}
 }
