@@ -41,7 +41,7 @@ type referrer struct {
 
 func (r *referrer) Image() (v1.Image, error) {
 	img, err := mutate.Append(empty.Image, mutate.Addendum{
-		Layer: static.NewLayer(r.bytes, ctypes.OCIUncompressedLayer),
+		Layer: static.NewLayer(r.bytes, r.mediaType),
 	})
 	if err != nil {
 		return nil, err
