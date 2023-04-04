@@ -268,7 +268,27 @@ func putReferrer(r io.Reader) error {
 func main() {
 	rootCmd := &cobra.Command{
 		Short: "A Trivy plugin for oci referrers",
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			debug, err := cmd.Flags().GetBool("debug")
+			if err != nil {
+				return fmt.Errorf("error getting debug flag: %w", err)
+			}
+
+			quiet, err := cmd.Flags().GetBool("quiet")
+			if err != nil {
+				return fmt.Errorf("error getting quiet flag: %w", err)
+			}
+
+			if err := log.InitLogger(debug, quiet); err != nil {
+				return err
+			}
+
+			return nil
+		},
 	}
+	rootCmd.PersistentFlags().BoolP("debug", "d", false, "debug mode")
+	rootCmd.PersistentFlags().BoolP("quiet", "q", false, "suppress log output")
+
 	putCmd := &cobra.Command{
 		Use:   "put",
 		Short: "put a referrer to the oci registry",
