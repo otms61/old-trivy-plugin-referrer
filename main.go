@@ -159,6 +159,8 @@ func tryReferrerFromSBOM(r io.Reader) (referrer, error) {
 		return referrer{}, fmt.Errorf("unsupported format: %s", format)
 	}
 
+	log.Logger.Infof("SBOM detected: %s", format)
+
 	targetDesc, err := remote.Head(repo)
 	if err != nil {
 		return referrer{}, fmt.Errorf("error getting descriptor: %w", err)
@@ -192,12 +194,14 @@ func tryReferrerFromVulnerability(r io.Reader) (referrer, error) {
 	repo, err := name.NewDigest(d.Scanner.Result.Metadata.RepoDigests[0])
 	if err != nil {
 		return referrer{}, fmt.Errorf("error creating new digest: %w", err)
-
 	}
+
 	targetDesc, err := remote.Head(repo)
 	if err != nil {
 		return referrer{}, fmt.Errorf("error fetching target descriptor: %w", err)
 	}
+
+	log.Logger.Infof("Cosign vulnerability data detected")
 
 	return referrer{
 		annotations: map[string]string{
