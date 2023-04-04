@@ -259,7 +259,7 @@ func putReferrer(r io.Reader) error {
 		return fmt.Errorf("error getting tag: %w", err)
 	}
 
-	log.Logger.Debugf("Pushing referrer to %s", tag.String())
+	log.Logger.Infof("Pushing referrer to %s", tag.String())
 
 	err = remote.Write(tag, img, remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
